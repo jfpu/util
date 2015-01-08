@@ -3,8 +3,8 @@
 
 #include <list>
 #include <ext/hash_map>
-#include <cstddef>
-#include <cunistd>
+#include <stddef.h>
+#include <unistd.h>
 #include <stdint.h>
 
 #include "oss_thread_lock.h"
@@ -16,22 +16,24 @@ using __gnu_cxx::hash_map;
 using wbl::thread::CGuard;
 using wbl::thread::CMutex;
 
+using indexer::Thread;
+
 namespace tre {
 namespace server {
 
 const uint32_t k_expire_secs = 60;
 const uint32_t k_bucket_num = 10;
 
-// Key: Adid. Value: Timestamp
+template<typename K= uint64_t, typename V = uint64_t>
 class TimeCacheMap : public Thread {
-  typedef hash_map<uint64_t, uint64_t> Adid_Time_Map;
-  typedef list<Adid_Time_Map*> Buckets;
+  typedef hash_map<K, V> Time_Map;
+  typedef list<Time_Map*> Buckets;
 
   uint32_t num_;
   uint32_t expire_time_;
   CMutex mutex_;
   Buckets buckets_;
-  Adid_Time_Map* deleted_map_;
+  Time_Map* deleted_map_;
 
   void RealExecute() {
     while (Running()) {
@@ -48,22 +50,28 @@ class TimeCacheMap : public Thread {
 
         deleted_map_ = buckets_.back();
         buckets_.pop_back();
-        buckets_.push_front(new Adid_Time_Map());
+        buckets_.push_front(new Time_Map());
       }
     }
   }
 
  public:
+  static V NullValue;
+
   TimeCacheMap()
     : num_(k_bucket_num), expire_time_(k_expire_secs), deleted_map_(NULL) {}
 
   explicit TimeCacheMap(uint32_t numBuckets, uint32_t expireSecs)
     : num_(numBuckets), expire_time_(expireSecs), deleted_map_(NULL) {}
 
-  void Init(uint32_t numBuckets = num_) {
+  void Init(uint32_t numBuckets = 0) {
+    if (0 == numBuckets) {
+      numBuckets = num_;
+    }
+
     buckets_.assign(numBuckets, NULL);
     for (uint32_t i = 0; i < numBuckets; ++i) {
-      Adid_Time_Map* pmap = new Adid_Time_Map();
+      Time_Map* pmap = new Time_Map();
       buckets_.push_front(pmap);
     }
 
@@ -78,12 +86,12 @@ class TimeCacheMap : public Thread {
     Stop();
   }
 
-  bool ContainsKey(uint64_t key) const {
+  bool ContainsKey(K& key) {
     CGuard<CMutex> lock(mutex_);
 
-    Buckets::iterator it = buckets_.begin();
+    typename Buckets::iterator it = buckets_.begin();
     for (; it != buckets_.end(); ++it) {
-      Adid_Time_Map* pmap = *it;
+      Time_Map* pmap = *it;
 
       if (pmap->end() != pmap->find(key))
         return true;
@@ -92,30 +100,31 @@ class TimeCacheMap : public Thread {
     return false;
   }
 
-  uint64_t Get(uint64_t key) const {
+  V& Get(K& key) {
     CGuard<CMutex> lock(mutex_);
 
-    Buckets::iterator it = buckets_.begin();
+    typename Buckets::iterator it = buckets_.begin();
     for (; it != buckets_.end(); ++it) {
-      Adid_Time_Map* pmap = *it;
+      Time_Map* pmap = *it;
 
-      Adid_Time_Map::iterator it_map = pmap->find(key);
+      typename Time_Map::iterator it_map = pmap->find(key);
       if (pmap->end() != it_map)
         return it_map->second;
     }
 
-    return 0;
+    return NullValue;
   }
 
-  void Insert(uint64_t key, uint64_t value) {
+  void Insert(K& key, V& value) {
     CGuard<CMutex> lock(mutex_);
 
-    Buckets::iterator it = buckets_.begin();
-    (*it)[key] = value;
+    typename Buckets::iterator it = buckets_.begin();
+    Time_Map& map = **it;
+    map[key] = value;
 
     ++it;
     for (; it != buckets_.end(); ++it) {
-      it->erase(key);
+      (*it)->erase(key);
     }
   }
 
@@ -123,18 +132,18 @@ class TimeCacheMap : public Thread {
     CGuard<CMutex> lock(mutex_);
 
     size_t size = 0;
-    Buckets::iterator it = buckets_.begin();
+    typename Buckets::iterator it = buckets_.begin();
     for (; it != buckets_.end(); ++it) {
-      size += it->size();
+      size += (*it)->size();
     }
 
     return size;
   }
 
-  void Oldest(Adid_Time_Map& map) const {
+  void Oldest(Time_Map& map) {
     CGuard<CMutex> lock(mutex_);
 
-    return map = *deleted_map_;
+    map = *deleted_map_;
   }
 };
 
