@@ -44,6 +44,7 @@ class TimeCacheMap : public Thread {
         CGuard<CMutex> lock(mutex_);
 
         if (NULL != deleted_map_) {
+          deleted_map_->clear();
           delete deleted_map_;
           deleted_map_ = NULL;
         }
