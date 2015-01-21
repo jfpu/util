@@ -9,6 +9,7 @@
 
 #include "oss_thread_lock.h"
 #include "thread.h"
+#include "log.h"
 
 using std::list;
 using __gnu_cxx::hash_map;
@@ -41,6 +42,7 @@ class TimeCacheMap : public Thread {
       sleep(expire_time_);
 
       {
+        // LogInfo("TimeCacheMap timeout");
         CGuard<CMutex> lock(mutex_);
 
         if (NULL != deleted_map_) {
@@ -57,25 +59,28 @@ class TimeCacheMap : public Thread {
   }
 
  public:
-  static V NullValue;
-
   TimeCacheMap()
     : num_(k_bucket_num), expire_time_(k_expire_secs), deleted_map_(NULL) {}
 
   explicit TimeCacheMap(uint32_t numBuckets, uint32_t expireSecs)
     : num_(numBuckets), expire_time_(expireSecs), deleted_map_(NULL) {}
 
-  void Init(uint32_t numBuckets = 0) {
-    if (0 == numBuckets) {
-      numBuckets = num_;
+  void Init(uint32_t timeout, uint32_t numBuckets) {
+    if (timeout > 0) {
+      expire_time_ = timeout;
     }
 
-    buckets_.assign(numBuckets, NULL);
-    for (uint32_t i = 0; i < numBuckets; ++i) {
+    if (numBuckets > 0) {
+      num_ = numBuckets;
+    }
+
+    for (uint32_t i = 0; i < num_; ++i) {
       Time_Map* pmap = new Time_Map();
+      if (NULL == pmap) {
+        continue;
+      }
       buckets_.push_front(pmap);
     }
-
     Start();
   }
 
@@ -85,7 +90,35 @@ class TimeCacheMap : public Thread {
 
   void Terminate() {
     Stop();
+
+    typename Buckets::iterator it = buckets_.begin();
+    for (; it != buckets_.end(); ++it) {
+      Time_Map* pmap = *it;
+
+      if (NULL != pmap) {
+        pmap->clear();
+        delete pmap;
+      }
+    }
+
+    buckets_.clear();
   }
+
+  void GetNewestData(Time_Map& tm) {
+    CGuard<CMutex> lock(mutex_);
+    if (buckets_.empty()) {
+      LogInfo("newest blacklist is null");
+      return;
+    }
+
+    typename Buckets::iterator it = buckets_.begin();
+    Time_Map* pmap = *it;
+    if (NULL == pmap) {
+      LogInfo("map is null");
+      return;
+    }
+    tm = *pmap;
+  } 
 
   bool ContainsKey(K& key) {
     CGuard<CMutex> lock(mutex_);
@@ -101,7 +134,7 @@ class TimeCacheMap : public Thread {
     return false;
   }
 
-  V& Get(K& key) {
+  bool Get(K& key, V& val) {
     CGuard<CMutex> lock(mutex_);
 
     typename Buckets::iterator it = buckets_.begin();
@@ -109,23 +142,39 @@ class TimeCacheMap : public Thread {
       Time_Map* pmap = *it;
 
       typename Time_Map::iterator it_map = pmap->find(key);
-      if (pmap->end() != it_map)
-        return it_map->second;
+      if (pmap->end() != it_map) {
+        val = it_map->second;
+        return true;
+      }
     }
-
-    return NullValue;
+    return false;
   }
 
-  void Insert(K& key, V& value) {
+  void Insert(const K& key, const V& value) {
     CGuard<CMutex> lock(mutex_);
 
     typename Buckets::iterator it = buckets_.begin();
     Time_Map& map = **it;
     map[key] = value;
-
     ++it;
     for (; it != buckets_.end(); ++it) {
       (*it)->erase(key);
+    }
+  }
+
+  void Erase(K& key) {
+    CGuard<CMutex> lock(mutex_);
+    typename Buckets::iterator it = buckets_.begin();
+    for (; it != buckets_.end(); ++it) {
+      (*it)->erase(key);
+    }
+  }
+
+  void Clean() {
+    CGuard<CMutex> lock(mutex_);
+    typename Buckets::iterator it = buckets_.begin();
+    for (; it != buckets_.end(); ++it) {
+      (*it)->clear();
     }
   }
 
